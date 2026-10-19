@@ -82,14 +82,20 @@ def _so3_log_forward(input: torch.Tensor) -> torch.Tensor:
     w_abs = torch.abs(w)
     v_larger_than_eps = v_norm > eps
     w_larger_than_eps = w_abs > eps
-    idx1 = v_larger_than_eps & w_larger_than_eps
-    idx2 = v_larger_than_eps & (~w_larger_than_eps)
-    idx3 = ~v_larger_than_eps
-
-    factor = torch.zeros_like(v_norm, requires_grad=False)
-    factor = factor + idx1 * torch.nan_to_num(2.0 * torch.atan(v_norm / w) / v_norm)
-    factor = factor + idx2 * torch.nan_to_num(_pm(w) * torch.pi / v_norm)
-    factor = factor + idx3 * torch.nan_to_num(2.0 * (1.0 / w - v_norm * v_norm / (3 * w**3)))
+    # Autograd differentiates inactive branches too: masking or nan_to_num
+    # after a division by zero still lets NaNs enter the backward pass.
+    # Protect denominators before evaluating any branch (identity: v=0;
+    # half turn: w=0), preserving the existing principal-Log convention.
+    safe_v_norm = torch.where(v_larger_than_eps, v_norm, torch.ones_like(v_norm))
+    safe_w = torch.where(w_larger_than_eps, w, torch.ones_like(w))
+    regular = 2.0 * torch.atan(v_norm / safe_w) / safe_v_norm
+    half_turn = _pm(w) * torch.pi / safe_v_norm
+    small = 2.0 * (1.0 / safe_w - v_norm * v_norm / (3 * safe_w**3))
+    factor = torch.where(
+        v_larger_than_eps,
+        torch.where(w_larger_than_eps, regular, half_turn),
+        small,
+    )
     return factor * v
 
 
