@@ -281,6 +281,13 @@ def install_pypose_ambient_grad_monkeypatch() -> bool:
         X = X.tensor() if isinstance(X, lt.LieTensor) else X
         return lt.LieTensor(_se3_inv_forward(X), ltype=lt.SE3_type)
 
+    def _ambient_se3_translation(self, X):
+        X = X.tensor() if isinstance(X, lt.LieTensor) else X
+        # PyPose's custom translation backward returns a padded tangent gradient.
+        # Keep ambient derivatives here; BAE applies the retraction Jacobian once
+        # at the parameter boundary, after differentiating the full residual.
+        return X[..., :3]
+
     lt.SO3Type.Log = _ambient_so3_log
     lt.SE3Type.Log = _ambient_se3_log
     lt.so3Type.Exp = _ambient_so3_exp
@@ -291,6 +298,7 @@ def install_pypose_ambient_grad_monkeypatch() -> bool:
     lt.SE3Type.Mul = _ambient_se3_mul
     lt.SO3Type.Inv = _ambient_so3_inv
     lt.SE3Type.Inv = _ambient_se3_inv
+    lt.SE3Type.translation = _ambient_se3_translation
 
     _PATCH_INSTALLED = True
     return True
