@@ -100,7 +100,7 @@ def test_ambient_se3_pipeline_is_fullgraph_traceable_with_local_gradients():
         pose_a = pp.SE3(a)
         pose_b = pp.SE3(b)
         relative = (pose_a.Inv() @ pose_b).Log().tensor()
-        return torch.cat((relative, pose_a.Act(p)), dim=-1)
+        return torch.cat((relative, pose_a.Act(p), pose_a.translation()), dim=-1)
 
     eager = residual(lhs, rhs, points)
     eager_gradients = torch.autograd.grad(

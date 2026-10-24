@@ -82,14 +82,20 @@ def _so3_log_forward(input: torch.Tensor) -> torch.Tensor:
     w_abs = torch.abs(w)
     v_larger_than_eps = v_norm > eps
     w_larger_than_eps = w_abs > eps
-    idx1 = v_larger_than_eps & w_larger_than_eps
-    idx2 = v_larger_than_eps & (~w_larger_than_eps)
-    idx3 = ~v_larger_than_eps
-
-    factor = torch.zeros_like(v_norm, requires_grad=False)
-    factor = factor + idx1 * torch.nan_to_num(2.0 * torch.atan(v_norm / w) / v_norm)
-    factor = factor + idx2 * torch.nan_to_num(_pm(w) * torch.pi / v_norm)
-    factor = factor + idx3 * torch.nan_to_num(2.0 * (1.0 / w - v_norm * v_norm / (3 * w**3)))
+    # Autograd differentiates inactive branches too: masking or nan_to_num
+    # after a division by zero still lets NaNs enter the backward pass.
+    # Protect denominators before evaluating any branch (identity: v=0;
+    # half turn: w=0), preserving the existing principal-Log convention.
+    safe_v_norm = torch.where(v_larger_than_eps, v_norm, torch.ones_like(v_norm))
+    safe_w = torch.where(w_larger_than_eps, w, torch.ones_like(w))
+    regular = 2.0 * torch.atan(v_norm / safe_w) / safe_v_norm
+    half_turn = _pm(w) * torch.pi / safe_v_norm
+    small = 2.0 * (1.0 / safe_w - v_norm * v_norm / (3 * safe_w**3))
+    factor = torch.where(
+        v_larger_than_eps,
+        torch.where(w_larger_than_eps, regular, half_turn),
+        small,
+    )
     return factor * v
 
 
@@ -281,6 +287,13 @@ def install_pypose_ambient_grad_monkeypatch() -> bool:
         X = X.tensor() if isinstance(X, lt.LieTensor) else X
         return lt.LieTensor(_se3_inv_forward(X), ltype=lt.SE3_type)
 
+    def _ambient_se3_translation(self, X):
+        X = X.tensor() if isinstance(X, lt.LieTensor) else X
+        # PyPose's custom translation backward returns a padded tangent gradient.
+        # Keep ambient derivatives here; BAE applies the retraction Jacobian once
+        # at the parameter boundary, after differentiating the full residual.
+        return X[..., :3]
+
     lt.SO3Type.Log = _ambient_so3_log
     lt.SE3Type.Log = _ambient_se3_log
     lt.so3Type.Exp = _ambient_so3_exp
@@ -291,6 +304,7 @@ def install_pypose_ambient_grad_monkeypatch() -> bool:
     lt.SE3Type.Mul = _ambient_se3_mul
     lt.SO3Type.Inv = _ambient_so3_inv
     lt.SE3Type.Inv = _ambient_se3_inv
+    lt.SE3Type.translation = _ambient_se3_translation
 
     _PATCH_INSTALLED = True
     return True
